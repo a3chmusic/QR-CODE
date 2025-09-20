@@ -107,108 +107,223 @@ class Generator {
     }
 
     wp_mkdir_p(dirname($savePath));
-    
-file_put_contents($savePath, $png);
 
-// Recolor for visual styles (safe try/catch)
-if (function_exists('imagecreatefrompng') && is_readable($savePath)){
-  try {
-    $im = @imagecreatefrompng($savePath);
-    if ($im){
-      $w = imagesx($im); $h = imagesy($im);
-      imagesavealpha($im, true);
+    file_put_contents($savePath, $png);
 
-      $visual = (string)($style['visual'] ?? 'solid');
-      $hexVis = self::normalize_hex($style['color'] ?? '#000000');
-      [$fr,$fg,$fb] = self::hex2rgb($hexVis);
+    // Recolor + apply module styles (gradient/two-tone/negative) and shapes
+    if (function_exists('imagecreatefrompng') && is_readable($savePath)){
+      try {
+        $im = @imagecreatefrompng($savePath);
+        if ($im){
+          $w = imagesx($im); $h = imagesy($im);
 
-      // Helpers
-      $blend   = function($a,$b,$t){ return (int)round($a + ($b - $a)*$t); };
-      $lighten = function($r,$g,$b,$t) use($blend){ return [$blend($r,255,$t), $blend($g,255,$t), $blend($b,255,$t)]; };
-      $darken  = function($r,$g,$b,$t) use($blend){ return [$blend($r,0,$t),   $blend($g,0,$t),   $blend($b,0,$t)  ]; };
+          if ($w > 0 && $h > 0){
+            $visual = (string)($style['visual'] ?? 'solid');
+            $shape  = strtolower((string)($style['shape'] ?? 'square'));
 
-      // Background & module color strategies
-      $bg_rgb    = [255,255,255];
-      $mod_color = [$fr,$fg,$fb];
-      if ($visual === 'two_tone'){
-          $bg_rgb = $lighten($fr,$fg,$fb,0.85); // subtle tint
-          $mod_color = $darken($fr,$fg,$fb,0.15);
-      } elseif ($visual === 'negative'){
-          $bg_rgb = [$fr,$fg,$fb]; // dark background in chosen color
-          $mod_color = [255,255,255];
-      }
+            $hexVis = self::normalize_hex($style['color'] ?? '');
+            if ($hexVis === '') $hexVis = '#000000';
+            [$fr,$fg,$fb] = self::hex2rgb($hexVis);
 
-      // Gradient function
-      $grad = function($x,$y) use($w,$h,$fr,$fg,$fb,$lighten,$darken,$blend,$visual){
-          if ($visual === 'gradient_linear'){
-              $t = ($w > 1) ? ($x/($w-1)) : 0.0;
-              [$r2,$g2,$b2] = $lighten($fr,$fg,$fb,0.35);
-              return [$blend($fr,$r2,$t), $blend($fg,$g2,$t), $blend($fb,$b2,$t)];
-          } elseif ($visual === 'gradient_radial'){
-              $cx = ($w-1)/2; $cy = ($h-1)/2;
-              $dx = $x - $cx; $dy = $y - $cy;
-              $d = sqrt($dx*$dx + $dy*$dy);
-              $maxd = sqrt($cx*$cx + $cy*$cy);
-              $t = $maxd > 0 ? min(1.0, $d / $maxd) : 0.0;
-              [$r2,$g2,$b2] = $lighten($fr,$fg,$fb,0.45); // lighter center
-              return [$blend($r2,$fr,$t), $blend($g2,$fg,$t), $blend($b2,$fb,$t)]; // darker edges
-          } elseif ($visual === 'gradient_multi'){
-              $t = ($h > 1) ? ($y/($h-1)) : 0.0;
-              [$r1,$g1,$b1] = [$fr,$fg,$fb];
-              [$r2,$g2,$b2] = $lighten($fr,$fg,$fb,0.30);
-              [$r3,$g3,$b3] = $darken($fr,$fg,$fb,0.20);
-              if ($t < 0.5){
-                  $tt = $t/0.5; return [$blend($r1,$r2,$tt), $blend($g1,$g2,$tt), $blend($b1,$b2,$tt)];
-              } else {
-                  $tt = ($t-0.5)/0.5; return [$blend($r2,$r3,$tt), $blend($g2,$g3,$tt), $blend($b2,$b3,$tt)];
+            $blend = function($a,$b,$t){ return (int)round($a + ($b - $a) * max(0.0, min(1.0, $t))); };
+            $lighten = function($r,$g,$b,$t) use($blend){ return [$blend($r,255,$t), $blend($g,255,$t), $blend($b,255,$t)]; };
+            $darken  = function($r,$g,$b,$t) use($blend){ return [$blend($r,0,$t), $blend($g,0,$t), $blend($b,0,$t)]; };
+
+            $bg_rgb    = [255,255,255];
+            $mod_color = [$fr,$fg,$fb];
+            if ($visual === 'two_tone'){
+              $bg_rgb   = $lighten($fr,$fg,$fb,0.85);
+              $mod_color = $darken($fr,$fg,$fb,0.15);
+            } elseif ($visual === 'negative'){
+              $bg_rgb    = [$fr,$fg,$fb];
+              $mod_color = [255,255,255];
+            }
+
+            $grad = function($x,$y) use($w,$h,$fr,$fg,$fb,$lighten,$darken,$blend,$visual){
+              if ($visual === 'gradient_linear'){
+                $t = ($w > 1) ? ($x / max(1,$w - 1)) : 0.0;
+                [$r2,$g2,$b2] = $lighten($fr,$fg,$fb,0.35);
+                return [$blend($fr,$r2,$t), $blend($fg,$g2,$t), $blend($fb,$b2,$t)];
               }
-          }
-          return [$fr,$fg,$fb];
-      };
+              if ($visual === 'gradient_radial'){
+                $cx = ($w - 1) / 2; $cy = ($h - 1) / 2;
+                $dx = $x - $cx; $dy = $y - $cy;
+                $dist = sqrt($dx * $dx + $dy * $dy);
+                $maxd = sqrt($cx * $cx + $cy * $cy);
+                $t = $maxd > 0 ? min(1.0, $dist / $maxd) : 0.0;
+                [$r2,$g2,$b2] = $lighten($fr,$fg,$fb,0.45);
+                return [$blend($r2,$fr,$t), $blend($g2,$fg,$t), $blend($b2,$fb,$t)];
+              }
+              if ($visual === 'gradient_multi'){
+                $t = ($h > 1) ? ($y / max(1,$h - 1)) : 0.0;
+                [$r1,$g1,$b1] = [$fr,$fg,$fb];
+                [$r2,$g2,$b2] = $lighten($fr,$fg,$fb,0.30);
+                [$r3,$g3,$b3] = $darken($fr,$fg,$fb,0.20);
+                if ($t < 0.5){
+                  $tt = $t / 0.5;
+                  return [$blend($r1,$r2,$tt), $blend($g1,$g2,$tt), $blend($b1,$b2,$tt)];
+                }
+                $tt = ($t - 0.5) / 0.5;
+                return [$blend($r2,$r3,$tt), $blend($g2,$g3,$tt), $blend($b2,$b3,$tt)];
+              }
+              return [$fr,$fg,$fb];
+            };
 
-      // Texture function
-      $texture = function($x,$y) use($fr,$fg,$fb,$lighten,$darken,$visual){
-          if ($visual === 'texture_crosshatch'){
-              $m = (($x % 6)==0) || (($y % 6)==0);
-              return $m ? $darken($fr,$fg,$fb,0.25) : [$fr,$fg,$fb];
-          } elseif ($visual === 'texture_halftone'){
-              $d = ((($x & 3)==0) && (($y & 3)==0)) || (((($x+2)&3)==0) && ((($y+2)&3)==0));
-              return $d ? $lighten($fr,$fg,$fb,0.35) : [$fr,$fg,$fb];
-          }
-          return [$fr,$fg,$fb];
-      };
+            $texture = function($x,$y) use($fr,$fg,$fb,$lighten,$darken,$visual){
+              if ($visual === 'texture_crosshatch'){
+                $m = (($x % 6) === 0) || (($y % 6) === 0);
+                return $m ? $darken($fr,$fg,$fb,0.25) : [$fr,$fg,$fb];
+              }
+              if ($visual === 'texture_halftone'){
+                $d = ((($x & 3) === 0) && (($y & 3) === 0)) || (((($x + 2) & 3) === 0) && ((($y + 2) & 3) === 0));
+                return $d ? $lighten($fr,$fg,$fb,0.35) : [$fr,$fg,$fb];
+              }
+              return [$fr,$fg,$fb];
+            };
 
-      // Repaint
-      for ($yy=0; $yy<$h; $yy++){
-        for ($xx=0; $xx<$w; $xx++){
-          $rgba = imagecolorsforindex($im, imagecolorat($im,$xx,$yy));
-          $is_dark = ($rgba['red'] < 128 || $rgba['green'] < 128 || $rgba['blue'] < 128);
-
-          if ($is_dark){
+            $moduleColor = function($x,$y) use($visual,$mod_color,$grad,$texture){
               if ($visual === 'gradient_linear' || $visual === 'gradient_radial' || $visual === 'gradient_multi'){
-                  [$r,$g,$b] = $grad($xx,$yy);
-              } elseif ($visual === 'texture_crosshatch' || $visual === 'texture_halftone'){
-                  [$r,$g,$b] = $texture($xx,$yy);
-              } elseif ($visual === 'negative'){
-                  [$r,$g,$b] = [255,255,255];
-              } else {
-                  [$r,$g,$b] = $mod_color;
+                return $grad($x,$y);
               }
-          } else {
-              [$r,$g,$b] = ($visual === 'two_tone' || $visual === 'negative') ? $bg_rgb : [255,255,255];
-          }
-          $col = imagecolorallocate($im, $r,$g,$b);
-          imagesetpixel($im, $xx,$yy, $col);
-        }
-      }
+              if ($visual === 'texture_crosshatch' || $visual === 'texture_halftone'){
+                return $texture($x,$y);
+              }
+              if ($visual === 'negative'){
+                return [255,255,255];
+              }
+              return $mod_color;
+            };
 
-      imagepng($im, $savePath);
-      imagedestroy($im);
+            $bgColorForModule = function($visual,$bg_rgb){
+              if ($visual === 'two_tone' || $visual === 'negative'){
+                return $bg_rgb;
+              }
+              return [255,255,255];
+            };
+
+            $moduleSize = (int)($style['scale'] ?? 10);
+            if ($moduleSize < 1) $moduleSize = 10;
+            $moduleSize = self::detect_module_size($im, $moduleSize);
+            if ($moduleSize < 1) $moduleSize = 1;
+
+            $modulesX = (int)max(1, round($w / $moduleSize));
+            $modulesY = (int)max(1, round($h / $moduleSize));
+
+            $canvas = imagecreatetruecolor($w, $h);
+            imagesavealpha($canvas, true);
+            imagealphablending($canvas, true);
+
+            $colorCache = [];
+            $alloc = function($img, array $rgb, int $alpha = 0) use (&$colorCache){
+              $key = implode(',', [$rgb[0],$rgb[1],$rgb[2],$alpha]);
+              if (!isset($colorCache[$key])){
+                $r = max(0, min(255, (int)$rgb[0]));
+                $g = max(0, min(255, (int)$rgb[1]));
+                $b = max(0, min(255, (int)$rgb[2]));
+                $colorCache[$key] = imagecolorallocatealpha($img, $r, $g, $b, max(0, min(127, $alpha)));
+              }
+              return $colorCache[$key];
+            };
+
+            $baseBg = $alloc($canvas, [255,255,255], 0);
+            imagefilledrectangle($canvas, 0, 0, $w - 1, $h - 1, $baseBg);
+
+            $bgDefault = $bgColorForModule($visual, $bg_rgb);
+
+            for ($my = 0; $my < $modulesY; $my++){
+              for ($mx = 0; $mx < $modulesX; $mx++){
+                $left   = (int)($mx * $moduleSize);
+                $top    = (int)($my * $moduleSize);
+                $right  = min($w - 1, (int)(($mx + 1) * $moduleSize) - 1);
+                $bottom = min($h - 1, (int)(($my + 1) * $moduleSize) - 1);
+                if ($right < $left) $right = $left;
+                if ($bottom < $top) $bottom = $top;
+
+                $cx = min($w - 1, (int)round(($left + $right) / 2));
+                $cy = min($h - 1, (int)round(($top + $bottom) / 2));
+
+                $rgba = imagecolorsforindex($im, imagecolorat($im, $cx, $cy));
+                $isDark = self::is_dark_rgba($rgba);
+
+                $bgRGB = $bgDefault;
+                if ($visual === 'two_tone' || $visual === 'negative'){
+                  $bgRGB = $bg_rgb;
+                }
+                $bgCol = $alloc($canvas, $bgRGB, 0);
+                imagefilledrectangle($canvas, $left, $top, $right, $bottom, $bgCol);
+
+                if ($isDark){
+                  [$mr,$mg,$mb] = $moduleColor($cx, $cy);
+                  $moduleCol = $alloc($canvas, [$mr,$mg,$mb], 0);
+
+                  $pad = 0;
+                  if ($visual !== 'negative'){
+                    if ($shape === 'square'){
+                      $pad = (int)max(0, floor($moduleSize * 0.05));
+                    } else {
+                      $pad = (int)max(0, floor($moduleSize * 0.18));
+                    }
+                  }
+
+                  $centerX = (int)round(($left + $right) / 2);
+                  $centerY = (int)round(($top + $bottom) / 2);
+                  $width   = max(1, $right - $left + 1 - $pad * 2);
+                  $height  = max(1, $bottom - $top + 1 - $pad * 2);
+
+                  switch ($shape){
+                    case 'dots':
+                      imagefilledellipse($canvas, $centerX, $centerY, $width, $height, $moduleCol);
+                      break;
+                    case 'diamond':
+                      $points = [
+                        $centerX, max($top + $pad, $top),
+                        min($right - $pad, $right), $centerY,
+                        $centerX, min($bottom - $pad, $bottom),
+                        max($left + $pad, $left), $centerY,
+                      ];
+                      imagefilledpolygon($canvas, array_map('intval', $points), 4, $moduleCol);
+                      break;
+                    case 'triangles':
+                      $up = (($mx + $my) % 2) === 0;
+                      if ($up){
+                        $points = [
+                          $centerX, max($top + $pad, $top),
+                          min($right - $pad, $right), min($bottom - $pad, $bottom),
+                          max($left + $pad, $left), min($bottom - $pad, $bottom),
+                        ];
+                      } else {
+                        $points = [
+                          max($left + $pad, $left), max($top + $pad, $top),
+                          min($right - $pad, $right), max($top + $pad, $top),
+                          $centerX, min($bottom - $pad, $bottom),
+                        ];
+                      }
+                      imagefilledpolygon($canvas, array_map('intval', $points), 3, $moduleCol);
+                      break;
+                    default:
+                      $rectLeft = max($left, min($right, $left + $pad));
+                      $rectTop  = max($top, min($bottom, $top + $pad));
+                      $rectRight = min($right, max($left, $right - $pad));
+                      $rectBottom = min($bottom, max($top, $bottom - $pad));
+                      if ($rectRight < $rectLeft) $rectRight = $rectLeft;
+                      if ($rectBottom < $rectTop) $rectBottom = $rectTop;
+                      imagefilledrectangle($canvas, $rectLeft, $rectTop, $rectRight, $rectBottom, $moduleCol);
+                      break;
+                  }
+                }
+              }
+            }
+
+            imagepng($canvas, $savePath, 6);
+            imagedestroy($canvas);
+          }
+
+          imagedestroy($im);
+        }
+      } catch (\Throwable $e) {
+        if (function_exists('error_log')) error_log('[ArtaQR] recolor: '.$e->getMessage());
+      }
     }
-  } catch (\Throwable $e) {
-    if (function_exists('error_log')) error_log('[ArtaQR] recolor: '.$e->getMessage());
-  }
-}
 
 // ------- caption (existing behavior left intact) -------
 // Apply frame style after QR is rendered
@@ -345,5 +460,82 @@ if (function_exists('imagecreatefrompng') && is_readable($savePath)){
     imagefilledellipse($img, $x2-$r, $y1+$r, $r*2, $r*2, $color);
     imagefilledellipse($img, $x1+$r, $y2-$r, $r*2, $r*2, $color);
     imagefilledellipse($img, $x2-$r, $y2-$r, $r*2, $r*2, $color);
+  }
+
+  protected static function is_dark_rgba(array $rgba): bool {
+    $alpha = (int)($rgba['alpha'] ?? 0);
+    $r = (int)($rgba['red'] ?? 255);
+    $g = (int)($rgba['green'] ?? 255);
+    $b = (int)($rgba['blue'] ?? 255);
+    if ($alpha >= 120) return false;
+    return ($r < 128) || ($g < 128) || ($b < 128);
+  }
+
+  protected static function detect_module_size($im, int $fallback = 10): int {
+    $isGdImage = false;
+    if (class_exists('\\GdImage', false)){
+      $isGdImage = $im instanceof \GdImage;
+    }
+
+    if (!is_resource($im) && !$isGdImage){
+      return max(1, $fallback);
+    }
+
+    $w = imagesx($im);
+    $h = imagesy($im);
+    if ($w <= 0 || $h <= 0){
+      return max(1, $fallback);
+    }
+
+    $midY = (int)floor($h / 2);
+    $midY = max(0, min($h - 1, $midY));
+    $firstDarkX = -1;
+    for ($x = 0; $x < $w; $x++){
+      $rgba = imagecolorsforindex($im, imagecolorat($im, $x, $midY));
+      if (self::is_dark_rgba($rgba)){
+        $firstDarkX = $x;
+        break;
+      }
+    }
+
+    if ($firstDarkX === -1){
+      return max(1, $fallback);
+    }
+
+    for ($x = $firstDarkX + 1; $x < $w; $x++){
+      $rgba = imagecolorsforindex($im, imagecolorat($im, $x, $midY));
+      if (!self::is_dark_rgba($rgba)){
+        $size = $x - $firstDarkX;
+        if ($size > 0){
+          return $size;
+        }
+        break;
+      }
+    }
+
+    $midX = $firstDarkX;
+    $firstDarkY = -1;
+    for ($y = 0; $y < $h; $y++){
+      $rgba = imagecolorsforindex($im, imagecolorat($im, $midX, $y));
+      if (self::is_dark_rgba($rgba)){
+        $firstDarkY = $y;
+        break;
+      }
+    }
+
+    if ($firstDarkY !== -1){
+      for ($y = $firstDarkY + 1; $y < $h; $y++){
+        $rgba = imagecolorsforindex($im, imagecolorat($im, $midX, $y));
+        if (!self::is_dark_rgba($rgba)){
+          $size = $y - $firstDarkY;
+          if ($size > 0){
+            return $size;
+          }
+          break;
+        }
+      }
+    }
+
+    return max(1, $fallback);
   }
 }
